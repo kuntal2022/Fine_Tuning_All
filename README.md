@@ -1,4 +1,5 @@
-# Fine-Tuning TinyLlama on Pharma/Nursing Pharmacology Data
+# Fine-Tuning TinyLlama on Pharma/Nursing Pharmacology Data (FineTuning(1).ipynb)
+
 
 This project fine-tunes **TinyLlama-1.1B** on domain-specific text extracted from a pharmacology/nursing PDF, using **LoRA (Low-Rank Adaptation)** with 8-bit quantization for memory-efficient training on a single GPU (Google Colab, free tier).
 
