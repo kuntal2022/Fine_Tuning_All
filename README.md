@@ -101,3 +101,107 @@ PyMuPDF
 - Track training/validation loss to check for overfitting given the small dataset size.
 - Compare LoRA rank/alpha settings for quality vs. training time trade-offs.
 - Evaluate generated output against held-out pharmacology Q&A pairs rather than a single qualitative prompt.
+
+
+-------
+
+
+
+# Qwen1.5-1.8B — Pharma Domain Fine-Tuning (Stage 1: Domain Adaptation)
+
+A 3-stage fine-tuning pipeline (Domain Adaptation → Instruction Tuning → DPO)
+on `Qwen/Qwen1.5-1.8B`, applied to a pharmacology text corpus. This README
+covers Stage 1, completed and evaluated below.
+
+## Data — OCR extraction
+
+The primary source was a scanned, public-domain pharmacology textbook
+(*Textbook of Pharmacology*, B.C. Bose — 956 pages, archive.org). Scanned
+PDFs have no embedded text layer, so a direct text-extraction library
+(`PyMuPDF`) returned empty strings on every page.
+
+**Pipeline used:**
+1. `PyMuPDF` renders each page to an image (`page.get_pixmap(dpi=300)`)
+2. `pytesseract` (Tesseract OCR) reads text from each rendered image
+3. Output saved as `pharma_ocr_text.jsonl` — one `{"page": i, "text": "..."}`
+   per line
+
+Result: **~953 usable pages** of OCR'd text (a few blank/near-empty pages
+were filtered out).
+
+## Scaling the corpus to 5,000+ records
+
+953 pages alone (~450K tokens) was too small a corpus for meaningful
+domain adaptation. To scale it up without doing more OCR:
+
+- Downloaded **Katzung's Basic & Clinical Pharmacology** — a clean,
+  already-digital-text pharmacology textbook — from the `cogbuji/medqa_corpus_en`
+  dataset on Hugging Face (**4,505 records**, no OCR needed).
+- Combined: `OCR text (953) + Katzung (4,505) = 5,458 records (~1.35M tokens)`.
+
+This mix of noisy-but-authentic OCR text and clean structured text gave a
+larger, more varied corpus than either source alone, for no extra
+OCR time.
+
+## GPU used
+
+**RTX PRO 4500 (32GB VRAM, Blackwell architecture)** on RunPod, $0.72/hr.
+
+Note: Blackwell (`sm_120`) is new enough that it required a specific CUDA
+build — `torch` installed via the `cu128` index
+(`pip install torch --index-url https://download.pytorch.org/whl/cu128`).
+The more common `cu124` build threw `CUDA error: no kernel image is
+available for execution on the device` on this GPU — worth knowing before
+picking a torch build for a Blackwell-class card.
+
+Training config: LoRA (`r=8`, `alpha=16`, targeting `q_proj/k_proj/v_proj/o_proj`),
+batch size 8, gradient accumulation 4, 3 epochs, `fp16`. Completed in
+~22-25 minutes.
+
+## Evaluation — perplexity, and why it matters here
+
+Training loss alone looked healthy (dropped from 5.49 → ~1.34 and
+plateaued — a normal curve, not overfitting). But loss on the *training*
+data doesn't confirm the model actually got *better* at pharmacology in
+general — it only confirms it fit its own training set.
+
+To check that, **perplexity** was compared on 5 held-out pharmacology
+sentences, before vs. after fine-tuning:
+
+| Test sentence topic       | Original PPL | Fine-tuned PPL |
+|----------------------------|:---:|:---:|
+| ACE inhibitors mechanism    | 4.22  | 4.32  |
+| Beta-blockers mechanism     | 6.73  | 8.27  |
+| Pharmacokinetics definition | 4.94  | 8.96  |
+| Epilepsy characterization   | 4.10  | 6.07  |
+| b.i.d. abbreviation         | 27.65 | 29.28 |
+| **Average**                 | **9.53** | **11.38** |
+
+**Result: the fine-tuned model scored worse (higher perplexity) than the
+un-tuned base model on every single sentence.** Likely explanation: Qwen's
+own pretraining already covers general medical text well, and a
+~1.35M-token corpus — much of it OCR noise — was too small to improve on
+that baseline; it may have nudged the model slightly toward its own
+training data's quirks rather than genuinely deepening pharmacology
+understanding.
+
+This was confirmed qualitatively too: generation samples used correct
+pharma vocabulary fluently, but mixed in real errors — a fabricated
+demographic claim about epilepsy prevalence, an incorrect classification
+of beta-adrenergic receptor subtypes, and occasional off-topic
+Chinese-language text appearing mid-answer (likely leakage from Qwen's
+multilingual pretraining, unrelated to this fine-tuning).
+
+**Decision:** rather than immediately re-doing Stage 1 with a cleaner
+corpus, proceed to Stage 2 (instruction tuning), since it gives the model
+direct correct-answer supervision — a stronger, more targeted signal than
+more raw-text pretraining on a small corpus. Stage 1 is revisited only if
+Stage 2 results also come back weak.
+
+## Status
+
+- [x] Stage 1 — Domain Adaptation (this README)
+- [ ] Stage 2 — Instruction Tuning
+- [ ] Stage 3 — DPO
+
+Model checkpoint: `Kuntal090/qwen1.5-1.8b-pharma-stage1` (Hugging Face Hub)
